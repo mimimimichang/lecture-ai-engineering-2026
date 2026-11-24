@@ -79,7 +79,7 @@ FULL_CONTEXT_PROMPT = "<資料>\n{materials}\n</資料>\n\n質問: {question}"
 
 
 # モデルは実行時に渡す（テストではAPIを呼ばない TestModel に差し替えるため）
-agent = Agent(instructions=INSTRUCTIONS)
+agent = Agent(instructions=INSTRUCTIONS, output_type=[str, DeferredToolRequests])
 agent.tool_plain(tools.search_materials)
 
 agent.tool_plain(tools.make_quiz)
@@ -114,7 +114,11 @@ def load_mcp_servers(config_path: Path = MCP_CONFIG) -> list[MCPToolset]:
 
 def build_mcp_agent(config_path: Path = MCP_CONFIG) -> Agent:
     """第5回: 関数を直接登録する代わりに、MCP サーバーが公開するツールを使うエージェント。INSTRUCTIONS は同じ。"""
-    return Agent(instructions=INSTRUCTIONS, toolsets=load_mcp_servers(config_path))
+    return Agent(
+        instructions=INSTRUCTIONS,
+        output_type=[str, DeferredToolRequests],
+        toolsets=load_mcp_servers(config_path),
+    )
 
 
 def build_model() -> GoogleModel:
@@ -217,6 +221,20 @@ def main() -> None:
                 )
             else:
                 result = target.run_sync(args.question, model=build_model())
+
+            if isinstance(result.output, DeferredToolRequests):
+                approvals = {}
+                for request in result.output.approvals:
+                    prompt = f"次の内容を保存しますか？\n{request.args.get('entry', '')}\n"
+                    approvals[request.tool_call_id] = input(prompt).strip().lower() in {"y", "yes"}
+
+                if approvals:
+                    result = target.run_sync(
+                        None,
+                        model=build_model(),
+                        message_history=result.all_messages(),
+                        deferred_tool_results=DeferredToolResults(approvals=approvals),
+                    )
         except ModelHTTPError as e:
             print(api_error_message(e.status_code, str(e.body)[:200]))
             raise SystemExit(1)
